@@ -31,13 +31,23 @@ to becomes the bucket key. References available inside the expression:
 
 | Goal | `keySelector` |
 |---|---|
-| Per-(caller, tool) fairness | `#[attributes.headers['client_id'] ++ '\|' ++ vars.toolName]` |
+| Per-(caller, tool) fairness | `#[(attributes.headers['client_id'] default 'anon') ++ '\|' ++ vars.toolName]` |
 | Per-tool ceiling (any caller) | `#[vars.toolName]` |
 | Per-caller pooled budget | `#[attributes.principal]` |
 | Global cap across all tools | `#['mcp-tools-call']` |
 
 The expression must evaluate to a non-empty scalar. Empty, error, or non-scalar
 results are treated as misconfiguration → JSON-RPC `400` (code `-32600`).
+
+> **Null-safety.** A `keySelector` that dereferences a header the caller may
+> omit — e.g. `attributes.headers['client_id'] ++ '|' ++ vars.toolName` — throws
+> at evaluation when that header is absent (DataWeave `null ++ '|'` errors),
+> surfacing to the client as `-32600 Failed to evaluate keySelector`. Guard every
+> optional reference with `default`, as in the per-(caller, tool) row above:
+> `(attributes.headers['client_id'] default 'anon')`. Note the consequence — all
+> callers that omit `client_id` then **share the single `anon` bucket** and
+> collectively exhaust it, so require the header upstream (or key on
+> `attributes.principal`) if per-caller isolation actually matters.
 
 ## Step 2 — Configure the policy
 
@@ -169,6 +179,39 @@ Requires Docker and `jq`.
 | Storage failure | `500` | `-32603` | Rate-limit backend error. |
 | Non-`tools/call` traffic | passthrough | — | Allowed unchanged with a debug log. |
 | Unmetered tool (`unmeteredTools` match) | passthrough | — | Allowed unchanged, no bucket consumed, no `X-RateLimit-*` headers. |
+
+### Where the `X-RateLimit-*` headers show up
+
+They are **HTTP response headers**, one transport layer below the JSON-RPC
+envelope. An MCP inspector / chat client renders only the JSON-RPC result (or
+error) body, so it will **not** show `X-RateLimit-Limit` / `-Remaining` /
+`-Reset` or `Retry-After` — and a `429` surfaces there as a generic transport
+error (`-32000 Rate limit exceeded ...` or a "Streamable HTTP error"), with the
+status code and headers swallowed by the client.
+
+To read the headers, use an HTTP-level client:
+
+```bash
+curl -i -X POST \
+  'https://<gateway-host>/<mcp-base-path>/mcp' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'client_id: me' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer_serials","arguments":{}}}'
+```
+
+- `-i` prints the response headers. With `exposeRateLimitHeadersOnSuccess: true`
+  a `200` carries the `X-RateLimit-*` set; a `429` always carries them plus
+  `Retry-After`. Postman/Insomnia (Headers tab) or browser DevTools → Network
+  work the same way.
+- `Accept: application/json, text/event-stream` — **both** media types are
+  required by the Streamable-HTTP transport; omit one and the endpoint returns
+  `406` and the client shows "no tools".
+- Send a real `client_id` (or whatever your `keySelector` keys on) to get your
+  own bucket. With no `client_id` and a `default 'anon'` keySelector, every
+  caller shares the `anon` bucket and repeated inspector runs exhaust it — the
+  `-32000` you see is that shared bucket, not a per-call limit; it resets after
+  `timePeriodInMilliseconds`.
 
 ## Operational notes
 
