@@ -54,6 +54,58 @@ Attach the policy to an MCP-fronting API instance and set the three properties:
 
 Each unique `keySelector` result gets its own independent window.
 
+## Step 2b — Add per-tool overrides and unmetered tools (optional)
+
+The `maximumRequests` / `timePeriodInMilliseconds` above are the **default**
+tier. You can layer two optional arrays on top:
+
+- **`toolOverrides`** — give specific tools their own limit.
+- **`unmeteredTools`** — exempt specific tools from rate limiting entirely.
+
+Both use **regular expressions** matched against the MCP tool name
+(`params.name`). Regexes are compiled once at startup and matched **anchored /
+full-match** — `get_.*` matches `get_x` but not `xget_x`; a plain name like
+`validate_binding` matches only that exact name.
+
+```yaml
+- policyRef:
+    name: mcp-tool-rate-limit-policy
+  config:
+    maximumRequests: 30              # DEFAULT: 30/min per key
+    timePeriodInMilliseconds: 60000
+    keySelector: "#[vars.toolName]"
+    toolOverrides:
+      - toolName: "validate_binding.*"  # regex; tighter cap on a write tool
+        maximumRequests: 2
+        timePeriodInMilliseconds: 60000
+      - toolName: "get_customer_serials" # exact name; wide read budget
+        maximumRequests: 300
+        timePeriodInMilliseconds: 60000
+    unmeteredTools:
+      - "health.*"                       # health checks bypass the limiter
+```
+
+**Resolution order (per request):**
+
+1. **`unmeteredTools`** is checked **first**, in list order. First match →
+   passthrough: no bucket consumed, no `X-RateLimit-*` headers.
+2. Otherwise **`toolOverrides`** is scanned in list order — the **first**
+   matching entry wins (so put more-specific patterns earlier).
+3. Otherwise the **default** tier applies.
+
+So a tool matching both an unmetered entry and an override is treated as
+unmetered; overlapping override patterns resolve to the earliest one.
+
+**Per-tool isolation.** Two different tools matched by the *same* override regex
+share that tier (the same limit) but get **independent windows**, because the
+`keySelector` (which folds `vars.toolName`) keys each tool separately. Example:
+under a single `toolName: "validate_.*"` override with a cap of 2,
+`validate_binding` and `validate_signature` each get their own 2/min window.
+
+Both arrays are optional. Omit them (or leave them empty) and the policy behaves
+exactly as before — a single default tier. An **invalid regex** makes the policy
+fail to start (fail loud) with a log naming the offending pattern.
+
 ## Step 3 — Test locally (playground)
 
 The repo ships a Docker-based playground: a local Omni Gateway plus an `httpbin`
@@ -66,7 +118,12 @@ make run
 
 This builds the policy WASM, patches `playground/config/api.yaml` with the live
 policy-ref name, and brings the stack up on `localhost:8081`. The bundled config
-allows **5** `tools/call` per tool name per **60s** (`keySelector: "#[vars.toolName]"`).
+uses `keySelector: "#[vars.toolName]"` (per-tool windows) and demonstrates all
+three tiers:
+
+- **Default**: 5 `tools/call` per tool name per 60s.
+- **Override** (`validate_binding.*`): 2 per 60s.
+- **Unmetered** (`health.*`): never rate-limited.
 
 Send a `tools/call`:
 
@@ -76,10 +133,11 @@ curl -sS -X POST http://localhost:8081/post \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"my_tool","arguments":{}}}' -i
 ```
 
-- The first 5 identical calls within the window return `200` with informational
-  `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers.
-- The 6th returns `429` with the same headers plus `Retry-After`, and a JSON-RPC
-  error envelope (code `-32000`).
+- A default tool (e.g. `my_tool`): first 5 calls within the window return `200`
+  with informational `X-RateLimit-Limit` / `X-RateLimit-Remaining` /
+  `X-RateLimit-Reset` headers; the 6th returns `429` (code `-32000`).
+- `validate_binding`: the 3rd call within 60s returns `429` (override cap of 2).
+- `health_check`: always `200`, with **no** `X-RateLimit-*` headers (unmetered).
 - Vary the tool name to confirm per-tool buckets are independent.
 
 ### End-to-end smoke script
@@ -102,6 +160,7 @@ Requires Docker and `jq`.
 | Bad `keySelector` (empty/non-scalar/eval error) | `400` | `-32600` | Treated as misconfiguration. |
 | Storage failure | `500` | `-32603` | Rate-limit backend error. |
 | Non-`tools/call` traffic | passthrough | — | Allowed unchanged with a debug log. |
+| Unmetered tool (`unmeteredTools` match) | passthrough | — | Allowed unchanged, no bucket consumed, no `X-RateLimit-*` headers. |
 
 ## Operational notes
 

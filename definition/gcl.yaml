@@ -15,14 +15,63 @@ spec:
   properties:
     maximumRequests:
       type: integer
-      title: Maximum Requests
-      description: Maximum number of tools/call requests allowed in the time period.
+      title: Maximum Requests (Default)
+      description: >-
+        Default maximum number of tools/call requests allowed in the time
+        period. Applies to any tool not matched by toolOverrides or
+        unmeteredTools.
       minimum: 1
     timePeriodInMilliseconds:
       type: integer
-      title: Time Period (ms)
-      description: Time period in milliseconds for the rate limit window.
+      title: Time Period (ms) (Default)
+      description: >-
+        Default time period in milliseconds for the rate limit window. Applies
+        to any tool not matched by toolOverrides or unmeteredTools.
       minimum: 1000
+    toolOverrides:
+      type: array
+      title: Tool Overrides
+      uniqueItems: true
+      description: >-
+        Per-tool rate-limit overrides. Each entry sets a distinct limit for the
+        tools whose name matches its regex. Entries are evaluated in list order;
+        the FIRST matching entry wins. A tool not matched by any entry (and not
+        unmetered) uses the default limit above.
+      items:
+        type: object
+        properties:
+          toolName:
+            type: string
+            title: Tool Name (Regex)
+            description: >-
+              Regular expression matched (anchored, full-match) against the MCP
+              tool name (params.name). Plain names like "get_customer_serials"
+              match literally; use patterns like "admin_.*" for prefixes.
+          maximumRequests:
+            type: integer
+            title: Maximum Requests
+            description: Maximum tools/call requests allowed for matching tools in the time period.
+            minimum: 1
+          timePeriodInMilliseconds:
+            type: integer
+            title: Time Period (ms)
+            description: Time period in milliseconds for this override's rate-limit window.
+            minimum: 1000
+        required:
+          - toolName
+          - maximumRequests
+          - timePeriodInMilliseconds
+    unmeteredTools:
+      type: array
+      title: Unmetered Tools
+      uniqueItems: true
+      description: >-
+        Regular expressions for tools that bypass rate limiting entirely.
+        Evaluated in list order and checked BEFORE toolOverrides; a tool
+        matching any entry passes through with no bucket consumed and no
+        X-RateLimit-* headers. Each entry is matched anchored (full-match).
+      items:
+        type: string
     keySelector:
       type: string
       title: Key Selector
