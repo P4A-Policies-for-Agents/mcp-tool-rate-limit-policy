@@ -1,51 +1,41 @@
 export PDK_COMPATIBILITY_VERSION = 1.4.0
 TARGET                	:= wasm32-wasip1
 TARGET_DIR            	:= target/$(TARGET)/release
+BUILD_POLICY_DIR        := target
 CARGO_ANYPOINT        	:= cargo-anypoint
-DEFINITION_NAME        	= $(shell anypoint-cli-v4 pdk policy-project definition get gcl-metadata-name)
-DEFINITION_NAMESPACE   	= $(shell anypoint-cli-v4 pdk policy-project definition get gcl-metadata-namespace)
-DEFINITION_SRC_GCL_PATH = $(shell anypoint-cli-v4 pdk policy-project locate-gcl definition-src)
-DEFINITION_GCL_PATH    	= $(shell anypoint-cli-v4 pdk policy-project locate-gcl definition)
-CRATE_NAME             	= $(shell cargo anypoint get-name)
-SETUP_ERROR_CMD        	= (echo "ERROR:\n\tMissing custom policy project setup. Please run 'make setup'\n")
+CRATE_NAME		        = $(shell cargo anypoint get-name)
+DEFINITION_GAV          = $(shell cargo anypoint get-policy-definition-gav)
+DEFINITION_NAMESPACE    := default
+MIN_FLEX_VERSION        := 1.9.3
 
 ifeq ($(OS), Windows_NT)
     SHELL = powershell.exe
     .SHELLFLAGS = -NoProfile -ExecutionPolicy Bypass -Command
-	ifneq ($(shell make -v | FIND "GNU Make 4"),)
-		ANYPOINT_METADATA_JSON  = $(shell cargo anypoint get-anypoint-metadata | ConvertTo-Json)
-	else
-		ANYPOINT_METADATA_JSON  = $(shell cargo anypoint get-anypoint-metadata)
-	endif
 	POLICY_REF_NAME = $(shell $$env:PDK_COMPATIBILITY_VERSION="$(PDK_COMPATIBILITY_VERSION)"; cargo anypoint get-policy-implementation-name)
 else
-	ANYPOINT_METADATA_JSON  = $(shell cargo anypoint get-anypoint-metadata)
 	POLICY_REF_NAME = $(shell export PDK_COMPATIBILITY_VERSION=$(PDK_COMPATIBILITY_VERSION); cargo anypoint get-policy-implementation-name)
 endif
 
 .PHONY: setup
 setup: install-cargo-anypoint ## Setup Cargo Anypoint to build
-	cargo fetch
+
+.PHONY: build-asset-files
+build-asset-files:  ## Retrieves the definition from exchange
+	@anypoint-cli-v4 pdk fetch-policy --gav=$(DEFINITION_GAV)
+	@cargo anypoint config-gen --output ./src/generated/config.rs
 
 .PHONY: build
-build: build-asset-files ## Build the policy definition and implementation
+build: ## Builds the policy implementation
 	@cargo build --target $(TARGET) --release
-	@cp "$(DEFINITION_GCL_PATH)" "$(TARGET_DIR)/$(CRATE_NAME)_definition.yaml"
-	@cargo anypoint gcl-gen -d $(DEFINITION_NAME) -n $(DEFINITION_NAMESPACE) -w $(TARGET_DIR)/$(CRATE_NAME).wasm -o $(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml
+	@cargo anypoint build-policy --target=$(BUILD_POLICY_DIR) --wasm=$(TARGET_DIR)/$(CRATE_NAME).wasm --min-runtime-version=$(MIN_FLEX_VERSION)
+	@anypoint-cli-v4 pdk install-policy --target $(TARGET_DIR) --path $(BUILD_POLICY_DIR)/$(CRATE_NAME)/implementation/
 	@echo $(POLICY_REF_NAME) > target/policy-ref-name.txt
 
 .PHONY: run
-run: build ## Run the policy in local flex
-	@anypoint-cli-v4 pdk log -t "warn" -m "Remember to update the config values in playground/config/api.yaml file for the policy configuration"
+run: build  ## Run the policy in local flex
 	@anypoint-cli-v4 pdk patch-gcl -f playground/config/api.yaml -p "spec.policies[0].policyRef.name" -v "$(POLICY_REF_NAME)"
 	@anypoint-cli-v4 pdk patch-gcl -f playground/config/api.yaml -p "spec.policies[0].policyRef.namespace" -v "$(DEFINITION_NAMESPACE)"
-ifeq ($(OS), Windows_NT)
-	rm -Force playground/config/custom-policies/*.yaml
-else
-	rm -f playground/config/custom-policies/*.yaml
-endif
-	cp "$(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml" "playground/config/custom-policies/$(CRATE_NAME)_implementation.yaml"
-	cp "$(TARGET_DIR)/$(CRATE_NAME)_definition.yaml" "playground/config/custom-policies/$(CRATE_NAME)_definition.yaml"
+	@anypoint-cli-v4 pdk install-policy --target ./playground/config/custom-policies --path $(BUILD_POLICY_DIR)/$(CRATE_NAME)/implementation/
 	-docker compose -f ./playground/docker-compose.yaml down
 	docker compose -f ./playground/docker-compose.yaml up
 
@@ -54,21 +44,16 @@ test: build ## Run integration tests
 	@cargo test -- --nocapture
 
 .PHONY: publish
-publish: build ## Publish a development version of the policy
-	anypoint-cli-v4 pdk policy-project publish --binary-path $(TARGET_DIR)/$(CRATE_NAME).wasm --implementation-gcl-path $(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml
+publish: build-asset-files build ## Publish a development version of the policy
+	@anypoint-cli-v4 pdk policy-wasm publish --wasm=$(TARGET_DIR)/$(CRATE_NAME).wasm  --target=$(BUILD_POLICY_DIR)/$(CRATE_NAME) --dev
 
 .PHONY: release
-release: build ## Publish a release version
-	anypoint-cli-v4 pdk policy-project release --binary-path $(TARGET_DIR)/$(CRATE_NAME).wasm --implementation-gcl-path $(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml
-
-.PHONY: build-asset-files
-build-asset-files: $(DEFINITION_SRC_GCL_PATH)
-	@anypoint-cli-v4 pdk policy-project build-asset-files --metadata '$(ANYPOINT_METADATA_JSON)'
-	@cargo anypoint config-gen -p -m $(DEFINITION_SRC_GCL_PATH) -o src/generated/config.rs
+release: build-asset-files  build ## Publish a release version
+	@anypoint-cli-v4 pdk policy-wasm publish --wasm=$(TARGET_DIR)/$(CRATE_NAME).wasm  --target=$(BUILD_POLICY_DIR)/$(CRATE_NAME)
 
 .PHONY: install-cargo-anypoint
 install-cargo-anypoint:
-	cargo install cargo-anypoint@1.8.0
+	@cargo install cargo-anypoint@1.8.0
 
 .PHONY: show-policy-ref-name
 show-policy-ref-name:
