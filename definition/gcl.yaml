@@ -13,6 +13,23 @@ spec:
     - name: extension-definition
       namespace: default
   properties:
+    keySelector:
+      type: string
+      title: Key Selector
+      format: dataweave
+      description: |
+        DataWeave expression evaluated to produce the full rate-limit key. Compose any dimensions you need.
+        The MCP tool name from `tools/call` requests is bound as the `toolName` variable, available
+        as `vars.toolName` inside the expression.
+        Examples:
+          per-(caller,tool):  "#[attributes.headers['client_id'] ++ '|' ++ vars.toolName]"
+          per-caller:         "#[attributes.headers['client_id']]"
+          per-tool ceiling:   "#[vars.toolName]"
+          global:             "#['mcp-tools-call']"
+      bindings:
+        attributes: true
+        vars:
+          - toolName
     maximumRequests:
       type: integer
       title: Maximum Requests (Default)
@@ -28,6 +45,15 @@ spec:
         Default time period in milliseconds for the rate limit window. Applies
         to any tool not matched by toolOverrides or unmeteredTools.
       minimum: 1000
+    exposeRateLimitHeadersOnSuccess:
+      type: boolean
+      title: Expose Rate-Limit Headers on Success
+      description: >-
+        When enabled, attach X-RateLimit-Limit / X-RateLimit-Remaining /
+        X-RateLimit-Reset headers to allowed (2xx) responses. Default: disabled.
+        The 429 rate-limited response ALWAYS carries these headers plus
+        Retry-After regardless of this setting.
+      default: false
     toolOverrides:
       type: array
       title: Tool Overrides
@@ -66,28 +92,21 @@ spec:
       title: Unmetered Tools
       uniqueItems: true
       description: >-
-        Regular expressions for tools that bypass rate limiting entirely.
-        Evaluated in list order and checked BEFORE toolOverrides; a tool
-        matching any entry passes through with no bucket consumed and no
-        X-RateLimit-* headers. Each entry is matched anchored (full-match).
+        Tools that bypass rate limiting entirely. Evaluated in list order and
+        checked BEFORE toolOverrides; a tool matching any entry passes through
+        with no bucket consumed and no X-RateLimit-* headers. Each entry's
+        toolName is matched anchored (full-match).
       items:
-        type: string
-    keySelector:
-      type: string
-      title: Key Selector
-      format: dataweave
-      description: |
-        DataWeave expression evaluated to produce the full rate-limit key. Compose any dimensions you need.
-        The MCP tool name from `tools/call` requests is bound as the `toolName` variable, available
-        as `vars.toolName` inside the expression.
-        Examples:
-          per-(caller,tool):  "#[attributes.headers['client_id'] ++ '|' ++ vars.toolName]"
-          per-caller:         "#[attributes.headers['client_id']]"
-          per-tool ceiling:   "#[vars.toolName]"
-          global:             "#['mcp-tools-call']"
-      bindings:
-        attributes: true
-        vars:
+        type: object
+        properties:
+          toolName:
+            type: string
+            title: Tool Name (Regex)
+            description: >-
+              Regular expression matched (anchored, full-match) against the MCP
+              tool name (params.name). Plain names like "get_customer_serials"
+              match literally; use patterns like "admin_.*" for prefixes.
+        required:
           - toolName
   required:
     - maximumRequests

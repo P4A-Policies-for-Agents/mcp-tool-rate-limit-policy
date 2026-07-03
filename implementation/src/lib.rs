@@ -193,13 +193,19 @@ async fn request_filter(
     // Enforce the rate limit (count by 1) against the resolved bucket group.
     match rate_limit.is_allowed(group, &key, 1).await {
         Ok(RateLimitResult::Allowed(stats)) => {
-            let headers = rate_limit_status_headers(
-                HEADER_PREFIX,
-                stats.limit as u64,
-                stats.remaining as u64,
-                stats.reset as u64,
-            );
-            Flow::Continue(Some(headers))
+            // Success-path X-RateLimit-* headers are opt-in (default off). The
+            // 429 path below always emits them regardless of this flag.
+            if config.expose_rate_limit_headers_on_success.unwrap_or(false) {
+                let headers = rate_limit_status_headers(
+                    HEADER_PREFIX,
+                    stats.limit as u64,
+                    stats.remaining as u64,
+                    stats.reset as u64,
+                );
+                Flow::Continue(Some(headers))
+            } else {
+                Flow::Continue(None)
+            }
         }
         Ok(RateLimitResult::TooManyRequests(stats)) => {
             policy_violations.generate_policy_violation();
@@ -237,11 +243,13 @@ async fn request_filter(
     }
 }
 
-/// Response filter — when the request was allowed, attach the rate-limit
-/// status headers (`X-RateLimit-{Limit,Remaining,Reset}`) so well-behaved
-/// callers can self-throttle without ever hitting a 429. `Retry-After` is
-/// intentionally NOT set on 200 responses (RFC 7231 reserves it for 429-class
-/// statuses).
+/// Response filter — when the request was allowed AND
+/// `exposeRateLimitHeadersOnSuccess` is enabled, attach the rate-limit status
+/// headers (`X-RateLimit-{Limit,Remaining,Reset}`) so well-behaved callers can
+/// self-throttle without ever hitting a 429. When the flag is off (the
+/// default) the request filter passes `None` and this filter no-ops.
+/// `Retry-After` is intentionally NOT set on 200 responses (RFC 7231 reserves
+/// it for 429-class statuses).
 async fn response_filter(
     response_state: ResponseState,
     request_data: RequestData<Option<Vec<(String, String)>>>,

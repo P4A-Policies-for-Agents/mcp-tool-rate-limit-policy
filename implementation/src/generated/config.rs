@@ -9,7 +9,14 @@ pub struct ToolOverridesItem {
     pub tool_name: String,
 }
 #[derive(Deserialize, Clone, Debug)]
+pub struct UnmeteredToolsItem {
+    #[serde(alias = "toolName")]
+    pub tool_name: String,
+}
+#[derive(Deserialize, Clone, Debug)]
 pub struct Config {
+    #[serde(alias = "exposeRateLimitHeadersOnSuccess")]
+    pub expose_rate_limit_headers_on_success: Option<bool>,
     #[serde(alias = "keySelector", deserialize_with = "de_key_selector_0")]
     pub key_selector: pdk::script::Script,
     #[serde(alias = "maximumRequests")]
@@ -19,7 +26,7 @@ pub struct Config {
     #[serde(alias = "toolOverrides")]
     pub tool_overrides: Option<Vec<ToolOverridesItem>>,
     #[serde(alias = "unmeteredTools")]
-    pub unmetered_tools: Option<Vec<String>>,
+    pub unmetered_tools: Option<Vec<UnmeteredToolsItem>>,
 }
 #[pdk::hl::entrypoint_flex]
 fn init(abi: &dyn pdk::flex_abi::api::FlexAbi) -> Result<(), anyhow::Error> {

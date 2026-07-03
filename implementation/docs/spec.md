@@ -7,18 +7,21 @@ Limits the number of MCP `tools/call` requests routed through Omni Gateway per o
 | `maximumRequests` | integer (≥ 1) | yes | **Default** maximum `tools/call` requests allowed inside the window, for any tool not matched by an override or unmetered entry. |
 | `timePeriodInMilliseconds` | integer (≥ 1000) | yes | **Default** length of the rolling rate-limit window, in milliseconds. |
 | `keySelector` | string (DataWeave, `format: dataweave`) | yes | Global expression producing the full rate-limit **key**. Operators compose whatever dimensions they need. Applies to every metered tool (default and override tiers alike). |
+| `exposeRateLimitHeadersOnSuccess` | boolean | no (default `false`) | When `true`, attach `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers to allowed (2xx) responses. The `429` response **always** carries these headers plus `Retry-After` regardless of this setting. |
 | `toolOverrides` | array of objects, `uniqueItems` | no | Per-tool limit overrides. Each item is `{ toolName (regex string), maximumRequests (≥1), timePeriodInMilliseconds (≥1000) }`. Evaluated in list order; first match wins. |
-| `unmeteredTools` | array of strings (regex), `uniqueItems` | no | Tools that bypass rate limiting entirely. Evaluated in list order and checked **before** `toolOverrides`. |
+| `unmeteredTools` | array of objects, `uniqueItems` | no | Tools that bypass rate limiting entirely. Each item is `{ toolName (regex string) }`. Evaluated in list order and checked **before** `toolOverrides`. |
 
 ### Regex matching
 
-`toolOverrides[].toolName` and `unmeteredTools[]` entries are **regular
+`toolOverrides[].toolName` and `unmeteredTools[].toolName` entries are **regular
 expressions**, compiled once at configure time as **anchored full-matches**
 (wrapped `^(?:PATTERN)$`). So `get_.*` matches `get_x` but not `xget_x`; a plain
 name like `validate_binding` matches only that exact name. `toolName` is a plain
 `string` in the schema (NOT `format: dataweave`) because array-item DataWeave
 does not compile through the gateway's config transform and 503s at deploy — the
-regex is matched in Rust instead. An invalid regex is a **hard configure-time
+regex is matched in Rust instead. `unmeteredTools` items are **objects**
+(`{ toolName }`), mirroring `toolOverrides`, so the two lists share the same
+item shape. An invalid regex is a **hard configure-time
 error**: the policy fails to launch (fail loud) rather than silently drop a rule.
 
 `keySelector` is declared with `bindings: { attributes: true, vars: [toolName] }`. The available references inside the expression are:
@@ -89,11 +92,11 @@ The rate limiter is addressed by two independent coordinates:
 1. Resolve the tier (above). Unmetered → passthrough.
 2. Evaluate `keySelector`. Failure (eval error or empty/non-scalar result) → JSON-RPC `400` with code `-32600`.
 3. Call `RateLimitInstance::is_allowed(<resolved-group>, &key, 1)`.
-   - `Allowed(stats)` → `Flow::Continue` carrying the informational `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers, which the response filter attaches to the upstream response. `Retry-After` is **not** emitted on allowed responses (RFC 7231 reserves it for 429-class statuses).
-   - `TooManyRequests { reset_in }` → JSON-RPC `429` with code `-32000`. Emits `policy_violations.generate_policy_violation()` and the `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers plus `Retry-After`.
+   - `Allowed(stats)` → `Flow::Continue`. When `exposeRateLimitHeadersOnSuccess` is `true`, it carries the informational `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers, which the response filter attaches to the upstream response. When the flag is `false` (default) or absent, the allowed response carries **no** `X-RateLimit-*` headers. `Retry-After` is **never** emitted on allowed responses (RFC 7231 reserves it for 429-class statuses).
+   - `TooManyRequests { reset_in }` → JSON-RPC `429` with code `-32000`. **Always** emits `policy_violations.generate_policy_violation()` and the `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers plus `Retry-After`, regardless of `exposeRateLimitHeadersOnSuccess`.
    - `Err(_)` → JSON-RPC `500` with code `-32603`.
 
-The response filter is a thin pass-through: when the request was allowed and headers were attached, it sets them on the response headers state. For pass-through traffic (non-POST, non-JSON, non `tools/call`, and **unmetered tools**) the filter no-ops.
+The response filter is a thin pass-through: when the request was allowed, `exposeRateLimitHeadersOnSuccess` is enabled, and headers were attached, it sets them on the response headers state. For pass-through traffic (non-POST, non-JSON, non `tools/call`, **unmetered tools**, and allowed requests when the flag is off) the filter no-ops.
 
 ### Operational posture
 
@@ -176,7 +179,7 @@ A relaxed default per-tool budget, a tighter cap on the destructive
         maximumRequests: 300
         timePeriodInMilliseconds: 60000
     unmeteredTools:
-      - "health.*"                       # never rate-limited
+      - toolName: "health.*"             # never rate-limited
 ```
 
 Resolution: `health_check` → unmetered (passthrough); `validate_binding_v2` →

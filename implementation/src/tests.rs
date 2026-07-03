@@ -44,6 +44,18 @@ fn config_json_with_selector(max: u64, window_ms: u64, selector: &str) -> String
     .to_string()
 }
 
+/// Config keyed off `vars.toolName` with an explicit
+/// `exposeRateLimitHeadersOnSuccess` flag.
+fn config_json_with_success_headers(max: u64, window_ms: u64, expose: bool) -> String {
+    json!({
+        "maximumRequests": max,
+        "timePeriodInMilliseconds": window_ms,
+        "keySelector": dw2pel("vars.toolName"),
+        "exposeRateLimitHeadersOnSuccess": expose,
+    })
+    .to_string()
+}
+
 /// Config with per-tool overrides and unmetered tools. `overrides` items are
 /// `(toolName_regex, max, window_ms)`; `unmetered` items are regexes. The
 /// keySelector is keyed off `vars.toolName` (per-tool windows).
@@ -63,12 +75,16 @@ fn config_json_full(
             })
         })
         .collect();
+    let unmetered_json: Vec<_> = unmetered
+        .iter()
+        .map(|name| json!({ "toolName": name }))
+        .collect();
     json!({
         "maximumRequests": default_max,
         "timePeriodInMilliseconds": default_window_ms,
         "keySelector": dw2pel("vars.toolName"),
         "toolOverrides": overrides_json,
-        "unmeteredTools": unmetered,
+        "unmeteredTools": unmetered_json,
     })
     .to_string()
 }
@@ -375,11 +391,12 @@ fn key_selector_returning_non_scalar_returns_400() {
 
 #[test]
 fn allowed_response_carries_rate_limit_headers_no_retry_after() {
-    // Budget of 10 requests/minute — first request is allowed (200) and the
-    // policy should attach informational rate-limit headers to the response,
-    // but NOT `Retry-After` (which is reserved for 429-class responses).
+    // Budget of 10 requests/minute with exposeRateLimitHeadersOnSuccess = true —
+    // first request is allowed (200) and the policy should attach informational
+    // rate-limit headers to the response, but NOT `Retry-After` (which is
+    // reserved for 429-class responses).
     let mut tester = UnitTestBuilder::default()
-        .with_config(&config_json(10, 60_000))
+        .with_config(&config_json_with_success_headers(10, 60_000, true))
         .with_entrypoint(crate::configure);
 
     let r = tester.request(post_tools_call("search", 1));
@@ -412,6 +429,75 @@ fn allowed_response_carries_rate_limit_headers_no_retry_after() {
     assert!(
         r.header("Retry-After").is_none(),
         "Retry-After must NOT be set on allowed (200) responses"
+    );
+}
+
+#[test]
+fn allowed_response_has_no_headers_when_flag_absent() {
+    // No exposeRateLimitHeadersOnSuccess key => default off => an allowed (200)
+    // response must carry NO X-RateLimit-* headers.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json(10, 60_000))
+        .with_entrypoint(crate::configure);
+
+    let r = tester.request(post_tools_call("search", 1));
+    assert_eq!(r.status_code(), 200, "first request should pass");
+    assert!(
+        r.header("X-RateLimit-Limit").is_none(),
+        "X-RateLimit-Limit must be absent on 200 when flag is unset"
+    );
+    assert!(
+        r.header("X-RateLimit-Remaining").is_none(),
+        "X-RateLimit-Remaining must be absent on 200 when flag is unset"
+    );
+    assert!(
+        r.header("X-RateLimit-Reset").is_none(),
+        "X-RateLimit-Reset must be absent on 200 when flag is unset"
+    );
+}
+
+#[test]
+fn allowed_response_has_no_headers_when_flag_false() {
+    // Explicit exposeRateLimitHeadersOnSuccess = false => no headers on 200.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_with_success_headers(10, 60_000, false))
+        .with_entrypoint(crate::configure);
+
+    let r = tester.request(post_tools_call("search", 1));
+    assert_eq!(r.status_code(), 200, "first request should pass");
+    assert!(
+        r.header("X-RateLimit-Limit").is_none(),
+        "X-RateLimit-* must be absent on 200 when flag is explicitly false"
+    );
+}
+
+#[test]
+fn rate_limited_429_always_carries_headers_regardless_of_flag() {
+    // The 429 path is unconditional: even with exposeRateLimitHeadersOnSuccess
+    // unset (default off), a rate-limited response must carry the full
+    // X-RateLimit-* set plus Retry-After.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json(1, 60_000))
+        .with_entrypoint(crate::configure);
+
+    assert_eq!(tester.request(post_tools_call("search", 1)).status_code(), 200);
+    let r = tester.request(post_tools_call("search", 2));
+    assert_eq!(r.status_code(), 429);
+    assert!(
+        r.header("X-RateLimit-Limit").is_some(),
+        "429 must carry X-RateLimit-Limit regardless of the success flag"
+    );
+    assert!(
+        r.header("X-RateLimit-Remaining").is_some(),
+        "429 must carry X-RateLimit-Remaining regardless of the success flag"
+    );
+    assert!(
+        r.header("X-RateLimit-Reset").is_some(),
+        "429 must carry X-RateLimit-Reset regardless of the success flag"
+    );
+    assert!(
+        r.header("Retry-After").is_some(),
+        "429 must carry Retry-After regardless of the success flag"
     );
 }
 
