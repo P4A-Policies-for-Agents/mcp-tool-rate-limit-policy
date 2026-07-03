@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 
 [package.metadata.anypoint]
 group_id = "00000000-0000-0000-0000-000000000000"
-definition_asset_id = "mcp-tool-rate-limit"
+definition_asset_id = { name = "mcp-tool-rate-limit", version = "1.0.0" }
 implementation_asset_id = "mcp-tool-rate-limit-policy-flex"
 
 [dependencies]
