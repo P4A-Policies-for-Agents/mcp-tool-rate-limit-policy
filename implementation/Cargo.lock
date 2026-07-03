@@ -1083,6 +1083,7 @@ dependencies = [
  "mime",
  "pdk",
  "pdk-unit",
+ "regex",
  "serde",
  "serde_json",
 ]

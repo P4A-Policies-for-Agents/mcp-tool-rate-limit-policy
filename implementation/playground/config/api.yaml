@@ -17,12 +17,23 @@ spec:
         name: mcp-tool-rate-limit-policy-flex-v1-0 # Overridden during 'make run' execution
         namespace: default
       config:
-        # Allow 5 tools/call requests per tool name per minute.
+        # DEFAULT: allow 5 tools/call requests per tool name per minute.
         maximumRequests: 5
         timePeriodInMilliseconds: 60000
         keySelector: "#[vars.toolName]"
+        # OVERRIDE (regex): stricter cap on the destructive validate_binding
+        # family — only 2 calls / minute regardless of the default above.
+        toolOverrides:
+          - toolName: "validate_binding.*"
+            maximumRequests: 2
+            timePeriodInMilliseconds: 60000
+        # UNMETERED (regex): health checks bypass rate limiting entirely.
+        unmeteredTools:
+          - "health.*"
         # Smoke testing tips:
         # 1. POST a JSON-RPC tools/call body to http://localhost:8081/post
         #    {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"my_tool","arguments":{}}}
-        # 2. The 6th identical call within 60s returns 429 with a JSON-RPC error envelope.
-        # 3. Vary the tool name to confirm per-tool buckets are independent.
+        # 2. Default tools (e.g. my_tool): 6th identical call within 60s -> 429.
+        # 3. validate_binding: 3rd call within 60s -> 429 (override cap of 2).
+        # 4. health_check: never rate-limited, no X-RateLimit-* headers.
+        # 5. Vary the tool name to confirm per-tool buckets are independent.

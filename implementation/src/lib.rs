@@ -2,6 +2,7 @@
 mod generated;
 mod mcp;
 mod errors;
+mod resolve;
 
 #[cfg(test)]
 mod tests;
@@ -9,6 +10,7 @@ mod tests;
 use crate::errors::{jsonrpc_error_body, rate_limit_headers, rate_limit_status_headers};
 use crate::generated::config::Config;
 use crate::mcp::{parse_tools_call, RequestId};
+use crate::resolve::{Resolution, ToolResolver};
 use anyhow::anyhow;
 use pdk::authentication::Authentication;
 use pdk::hl::timer::Clock;
@@ -23,7 +25,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const POLICY_NAME: &str = "mcp-tool-rate-limit-policy";
-const DEFAULT_BUCKET: &str = "default";
 const APPLICATION_JSON: &str = "application/json";
 const HEADER_PREFIX: &str = "X-RateLimit";
 
@@ -72,6 +73,7 @@ fn jsonrpc_error_response(
 async fn request_filter(
     rate_limit: Arc<RateLimitInstance>,
     config: Arc<Config>,
+    resolver: Arc<ToolResolver>,
     request_state: RequestState,
     _authentication: Authentication,
     stream_properties: StreamProperties,
@@ -124,6 +126,24 @@ async fn request_filter(
     let id_bytes = id_to_bytes(&parsed.id);
     stream_properties.set_property(MCP_REQUEST_ID_PATH, Some(&id_bytes));
 
+    // Resolve the tool name to a rate-limit tier. Unmetered tools pass through
+    // immediately — no bucket consumed, no keySelector evaluation, no
+    // X-RateLimit-* headers. Otherwise we get the bucket group + tier to use.
+    // The tier is not needed on the hot path — the rate-limit bucket registered
+    // for this group already carries the limit, so `is_allowed` returns
+    // tier-accurate stats. We only need the group id here.
+    let group = match resolver.resolve(&parsed.tool_name) {
+        Resolution::Unmetered => {
+            logger::debug!(
+                "[{}] tool '{}' is unmetered; passing through",
+                POLICY_NAME,
+                parsed.tool_name
+            );
+            return Flow::Continue(None);
+        }
+        Resolution::Metered { group, .. } => group,
+    };
+
     // Evaluate the operator-supplied keySelector DataWeave expression.
     // `HeadersBodyHandler: HeadersHandler + BodyHandler`, so we can pass it
     // anywhere a `&dyn HeadersHandler` is expected.
@@ -170,8 +190,8 @@ async fn request_filter(
         }
     };
 
-    // Enforce the rate limit (count by 1).
-    match rate_limit.is_allowed(DEFAULT_BUCKET, &key, 1).await {
+    // Enforce the rate limit (count by 1) against the resolved bucket group.
+    match rate_limit.is_allowed(group, &key, 1).await {
         Ok(RateLimitResult::Allowed(stats)) => {
             let headers = rate_limit_status_headers(
                 HEADER_PREFIX,
@@ -247,19 +267,34 @@ async fn configure(
     let config: Config = serde_json::from_slice(&bytes)
         .map_err(|e| anyhow!("Failed to parse policy configuration: {}", e))?;
 
-    let period_ms = config.time_period_in_milliseconds as u64;
-    let max_requests = config.maximum_requests as u64;
+    // Compile all operator regexes ONCE. Any invalid regex is a hard
+    // configure-time error — fail loud rather than serve with a dropped rule.
+    let resolver = ToolResolver::from_config(&config)
+        .map_err(|e| anyhow!("Failed to compile tool rate-limit configuration: {}", e))?;
 
-    let ticker = clock.period(Duration::from_millis(period_ms));
+    // Register one bucket per tier: the default plus one per override entry.
+    // The group id encodes the tier so a limit change forces a fresh bucket.
+    // The ticker period drives clustered sync; use the default window (the
+    // sync cadence is independent of any single bucket's window length).
+    let sync_period_ms = config.time_period_in_milliseconds as u64;
+    let buckets = resolver
+        .bucket_specs()
+        .into_iter()
+        .map(|(group, tier)| {
+            (
+                group,
+                vec![Tier {
+                    requests: tier.max_requests,
+                    period_in_millis: tier.period_in_millis,
+                }],
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let ticker = clock.period(Duration::from_millis(sync_period_ms));
     let builder = rate_limit
         .new("mcp-tool-rate-limit".to_string())
-        .buckets(vec![(
-            DEFAULT_BUCKET.to_string(),
-            vec![Tier {
-                requests: max_requests,
-                period_in_millis: period_ms,
-            }],
-        )])
+        .buckets(buckets)
         .clustered(Rc::new(ticker));
 
     let rate_limit_instance = builder
@@ -267,15 +302,17 @@ async fn configure(
         .map_err(|e| anyhow!("Failed to build the rate limit instance: {}", e))?;
 
     let config = Arc::new(config);
+    let resolver = Arc::new(resolver);
     let rate_limit_instance = Arc::new(rate_limit_instance);
     let policy_violations = Arc::new(policy_violations);
 
     let filter = on_request(move |rs, auth, sp| {
         let config = Arc::clone(&config);
+        let resolver = Arc::clone(&resolver);
         let rate_limit = Arc::clone(&rate_limit_instance);
         let policy_violations = Arc::clone(&policy_violations);
         async move {
-            request_filter(rate_limit, config, rs, auth, sp, &policy_violations).await
+            request_filter(rate_limit, config, resolver, rs, auth, sp, &policy_violations).await
         }
     })
     .on_response(|rs, req_data| async move {

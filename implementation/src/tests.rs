@@ -44,6 +44,35 @@ fn config_json_with_selector(max: u64, window_ms: u64, selector: &str) -> String
     .to_string()
 }
 
+/// Config with per-tool overrides and unmetered tools. `overrides` items are
+/// `(toolName_regex, max, window_ms)`; `unmetered` items are regexes. The
+/// keySelector is keyed off `vars.toolName` (per-tool windows).
+fn config_json_full(
+    default_max: u64,
+    default_window_ms: u64,
+    overrides: &[(&str, u64, u64)],
+    unmetered: &[&str],
+) -> String {
+    let overrides_json: Vec<_> = overrides
+        .iter()
+        .map(|(name, max, win)| {
+            json!({
+                "toolName": name,
+                "maximumRequests": max,
+                "timePeriodInMilliseconds": win,
+            })
+        })
+        .collect();
+    json!({
+        "maximumRequests": default_max,
+        "timePeriodInMilliseconds": default_window_ms,
+        "keySelector": dw2pel("vars.toolName"),
+        "toolOverrides": overrides_json,
+        "unmeteredTools": unmetered,
+    })
+    .to_string()
+}
+
 fn tools_call_body(tool: &str, id: u64) -> String {
     format!(
         r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{{}}}}}}"#,
@@ -385,6 +414,180 @@ fn allowed_response_carries_rate_limit_headers_no_retry_after() {
         "Retry-After must NOT be set on allowed (200) responses"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Per-tool overrides + unmetered (feature: per-tool rate limits)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unmetered_tool_bypasses_rate_limit_entirely() {
+    // Default budget of 1, but `health` is unmetered — many calls all pass and
+    // carry NO X-RateLimit-* headers (no bucket consumed).
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(1, 60_000, &[], &["health"]))
+        .with_entrypoint(crate::configure);
+
+    for _ in 0..5 {
+        let r = tester.request(post_tools_call("health", 1));
+        assert_eq!(r.status_code(), 200, "unmetered tool must always pass");
+        assert!(
+            r.header("X-RateLimit-Limit").is_none(),
+            "unmetered tool must not carry rate-limit headers"
+        );
+    }
+}
+
+#[test]
+fn unmetered_regex_matches_by_pattern() {
+    // Regex `debug_.*` marks a family of tools unmetered.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(1, 60_000, &[], &["debug_.*"]))
+        .with_entrypoint(crate::configure);
+
+    for _ in 0..3 {
+        assert_eq!(
+            tester.request(post_tools_call("debug_trace", 1)).status_code(),
+            200
+        );
+    }
+    // A non-matching tool still hits the default limit.
+    assert_eq!(tester.request(post_tools_call("other", 1)).status_code(), 200);
+    assert_eq!(tester.request(post_tools_call("other", 2)).status_code(), 429);
+}
+
+#[test]
+fn override_applies_its_own_limit_not_default() {
+    // Default budget is large (100); `validate_binding` is capped at 2.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(
+            100,
+            60_000,
+            &[("validate_binding", 2, 60_000)],
+            &[],
+        ))
+        .with_entrypoint(crate::configure);
+
+    assert_eq!(
+        tester.request(post_tools_call("validate_binding", 1)).status_code(),
+        200
+    );
+    assert_eq!(
+        tester.request(post_tools_call("validate_binding", 2)).status_code(),
+        200
+    );
+    // 3rd exceeds the override's cap of 2 even though the default is 100.
+    assert_eq!(
+        tester.request(post_tools_call("validate_binding", 3)).status_code(),
+        429
+    );
+}
+
+#[test]
+fn unmatched_tool_uses_default_when_overrides_present() {
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(
+            1,
+            60_000,
+            &[("validate_binding", 99, 60_000)],
+            &[],
+        ))
+        .with_entrypoint(crate::configure);
+
+    // `get_customer_serials` matches neither override nor unmetered → default 1.
+    assert_eq!(
+        tester.request(post_tools_call("get_customer_serials", 1)).status_code(),
+        200
+    );
+    assert_eq!(
+        tester.request(post_tools_call("get_customer_serials", 2)).status_code(),
+        429
+    );
+}
+
+#[test]
+fn unmetered_wins_over_override_for_same_tool() {
+    // A tool matching BOTH an unmetered entry and an override: unmetered is
+    // checked first and wins, so no limit applies.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(
+            1,
+            60_000,
+            &[("get_.*", 1, 60_000)],
+            &["get_.*"],
+        ))
+        .with_entrypoint(crate::configure);
+
+    for _ in 0..4 {
+        assert_eq!(
+            tester.request(post_tools_call("get_customer", 1)).status_code(),
+            200,
+            "unmetered must win over override"
+        );
+    }
+}
+
+#[test]
+fn first_matching_override_wins_in_list_order() {
+    // Two overlapping patterns; the FIRST (cap 1) wins for get_customer_serials.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(
+            100,
+            60_000,
+            &[("get_.*", 1, 60_000), ("get_customer.*", 99, 60_000)],
+            &[],
+        ))
+        .with_entrypoint(crate::configure);
+
+    assert_eq!(
+        tester.request(post_tools_call("get_customer_serials", 1)).status_code(),
+        200
+    );
+    // Second call blocked because the FIRST override (cap 1) matched, not the
+    // more permissive second one.
+    assert_eq!(
+        tester.request(post_tools_call("get_customer_serials", 2)).status_code(),
+        429
+    );
+}
+
+#[test]
+fn per_tool_windows_isolated_within_one_override_entry() {
+    // ONE regex override entry (`tool_.*`, cap 1) covers two tool names. Because
+    // the keySelector folds vars.toolName into the bucket KEY, each tool gets an
+    // independent window under the shared tier.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(
+            100,
+            60_000,
+            &[("tool_.*", 1, 60_000)],
+            &[],
+        ))
+        .with_entrypoint(crate::configure);
+
+    // tool_a: first allowed, second blocked.
+    assert_eq!(tester.request(post_tools_call("tool_a", 1)).status_code(), 200);
+    assert_eq!(tester.request(post_tools_call("tool_a", 2)).status_code(), 429);
+    // tool_b: independent window — first still allowed despite tool_a exhausted.
+    assert_eq!(tester.request(post_tools_call("tool_b", 3)).status_code(), 200);
+    assert_eq!(tester.request(post_tools_call("tool_b", 4)).status_code(), 429);
+}
+
+#[test]
+fn empty_arrays_behave_like_default_only_backcompat() {
+    // Explicitly-empty arrays must behave exactly like the pre-feature policy.
+    let mut tester = UnitTestBuilder::default()
+        .with_config(&config_json_full(1, 60_000, &[], &[]))
+        .with_entrypoint(crate::configure);
+
+    assert_eq!(tester.request(post_tools_call("search", 1)).status_code(), 200);
+    assert_eq!(tester.request(post_tools_call("search", 2)).status_code(), 429);
+}
+
+// NOTE: invalid-regex → hard configure-time error is covered directly by the
+// `resolve::tests::from_parts_rejects_invalid_*_regex` unit tests. pdk-unit's
+// `with_entrypoint` logs the launcher error (see "Failed to compile tool
+// rate-limit configuration") rather than panicking, so asserting it at the
+// integration layer would test harness internals rather than policy behavior.
 
 #[test]
 fn jsonrpc_error_envelope_preserves_request_id() {
