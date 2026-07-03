@@ -50,6 +50,10 @@ Attach the policy to an MCP-fronting API instance and set the three properties:
     maximumRequests: 60           # requests allowed per window (>= 1)
     timePeriodInMilliseconds: 60000  # window length in ms (>= 1000)
     keySelector: "#[attributes.headers['client_id'] ++ '|' ++ vars.toolName]"
+    # Optional (default false): attach X-RateLimit-* headers to allowed (200)
+    # responses so well-behaved callers can self-throttle. The 429 response
+    # always carries these headers plus Retry-After regardless of this flag.
+    exposeRateLimitHeadersOnSuccess: false
 ```
 
 Each unique `keySelector` result gets its own independent window.
@@ -82,7 +86,7 @@ full-match** — `get_.*` matches `get_x` but not `xget_x`; a plain name like
         maximumRequests: 300
         timePeriodInMilliseconds: 60000
     unmeteredTools:
-      - "health.*"                       # health checks bypass the limiter
+      - toolName: "health.*"             # health checks bypass the limiter
 ```
 
 **Resolution order (per request):**
@@ -125,6 +129,10 @@ three tiers:
 - **Override** (`validate_binding.*`): 2 per 60s.
 - **Unmetered** (`health.*`): never rate-limited.
 
+It also sets `exposeRateLimitHeadersOnSuccess: true`, so allowed (200) responses
+carry the informational `X-RateLimit-*` headers below (this is opt-in; the flag
+defaults to `false`).
+
 Send a `tools/call`:
 
 ```bash
@@ -155,8 +163,8 @@ Requires Docker and `jq`.
 
 | Situation | HTTP | JSON-RPC code | Notes |
 |---|---|---|---|
-| Allowed | `200` | — | `X-RateLimit-*` headers attached to the upstream response. No `Retry-After`. |
-| Limit exhausted | `429` | `-32000` | `X-RateLimit-*` + `Retry-After`. Emits a policy violation. |
+| Allowed | `200` | — | `X-RateLimit-*` headers attached only when `exposeRateLimitHeadersOnSuccess: true` (default off). Never `Retry-After`. |
+| Limit exhausted | `429` | `-32000` | Always carries `X-RateLimit-*` + `Retry-After` regardless of `exposeRateLimitHeadersOnSuccess`. Emits a policy violation. |
 | Bad `keySelector` (empty/non-scalar/eval error) | `400` | `-32600` | Treated as misconfiguration. |
 | Storage failure | `500` | `-32603` | Rate-limit backend error. |
 | Non-`tools/call` traffic | passthrough | — | Allowed unchanged with a debug log. |
@@ -166,6 +174,10 @@ Requires Docker and `jq`.
 
 - **Clustered accounting.** Buckets use PDK's `RateLimitBuilder` in clustered
   mode, so multiple Omni Gateway replicas share the same window state.
+- **Success-response headers are opt-in.** `exposeRateLimitHeadersOnSuccess`
+  defaults to `false`, so allowed (200) responses carry **no** `X-RateLimit-*`
+  headers unless you enable it. The `429` rate-limited response **always** emits
+  the full `X-RateLimit-*` set plus `Retry-After` irrespective of this flag.
 - **Fail-open / fail-closed.** Unrecognised traffic fails open (passes through);
   evaluation and storage failures fail closed with a structured JSON-RPC error.
 - **Local-mode safe.** The filter does not `unwrap` on context-derived options;

@@ -21,6 +21,9 @@ spec:
         maximumRequests: 5
         timePeriodInMilliseconds: 60000
         keySelector: "#[vars.toolName]"
+        # Opt in to informational X-RateLimit-* headers on allowed (200)
+        # responses (default is off; the 429 path always carries them).
+        exposeRateLimitHeadersOnSuccess: true
         # OVERRIDE (regex): stricter cap on the destructive validate_binding
         # family — only 2 calls / minute regardless of the default above.
         toolOverrides:
@@ -29,7 +32,7 @@ spec:
             timePeriodInMilliseconds: 60000
         # UNMETERED (regex): health checks bypass rate limiting entirely.
         unmeteredTools:
-          - "health.*"
+          - toolName: "health.*"
         # Smoke testing tips:
         # 1. POST a JSON-RPC tools/call body to http://localhost:8081/post
         #    {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"my_tool","arguments":{}}}

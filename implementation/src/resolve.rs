@@ -92,11 +92,18 @@ impl ToolResolver {
                 )
             })
             .collect();
+        let unmetered: Vec<String> = config
+            .unmetered_tools
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|u| u.tool_name)
+            .collect();
         Self::from_parts(
             config.maximum_requests,
             config.time_period_in_milliseconds,
             &overrides,
-            &config.unmetered_tools.clone().unwrap_or_default(),
+            &unmetered,
         )
     }
 
