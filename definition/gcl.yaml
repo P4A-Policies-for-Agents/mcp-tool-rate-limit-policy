@@ -1,0 +1,46 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Extension
+metadata:
+  labels:
+    title: MCP Tool Rate Limit
+    description: Limits the number of MCP tools/call requests per operator-defined key per time window.
+    category: MCP
+    metadata/interfaceScope: api
+    metadata/capabilities/assetTypes: mcp
+spec:
+  extends:
+    - name: extension-definition
+      namespace: default
+  properties:
+    maximumRequests:
+      type: integer
+      title: Maximum Requests
+      description: Maximum number of tools/call requests allowed in the time period.
+      minimum: 1
+    timePeriodInMilliseconds:
+      type: integer
+      title: Time Period (ms)
+      description: Time period in milliseconds for the rate limit window.
+      minimum: 1000
+    keySelector:
+      type: string
+      title: Key Selector
+      format: dataweave
+      description: |
+        DataWeave expression evaluated to produce the full rate-limit key. Compose any dimensions you need.
+        The MCP tool name from `tools/call` requests is bound as the `toolName` variable, available
+        as `vars.toolName` inside the expression.
+        Examples:
+          per-(caller,tool):  "#[attributes.headers['client_id'] ++ '|' ++ vars.toolName]"
+          per-caller:         "#[attributes.headers['client_id']]"
+          per-tool ceiling:   "#[vars.toolName]"
+          global:             "#['mcp-tools-call']"
+      bindings:
+        attributes: true
+        vars:
+          - toolName
+  required:
+    - maximumRequests
+    - timePeriodInMilliseconds
+    - keySelector

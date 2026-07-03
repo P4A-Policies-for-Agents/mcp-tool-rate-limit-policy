@@ -1,0 +1,8 @@
+{
+  "main": "gcl.yaml",
+  "groupId": "00000000-0000-0000-0000-000000000000",
+  "assetId": "mcp-tool-rate-limit",
+  "version": "1.0.0",
+  "name": "MCP Tool Rate Limit",
+  "description": "Limits the number of MCP tools/call requests per operator-defined key per time window."
+}

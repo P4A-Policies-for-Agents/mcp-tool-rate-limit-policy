@@ -1,0 +1,35 @@
+# Copyright 2026 Salesforce, Inc. All rights reserved.
+
+# Standalone crate (not part of a Cargo workspace).
+# Dependencies are pinned directly.
+
+[package]
+name = "mcp_tool_rate_limit_policy"
+version = "1.0.0"
+rust-version = "1.88.0"
+edition = "2021"
+resolver = "2"
+description = "MCP Tool Rate Limit policy for MuleSoft Omni Gateway"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.anypoint]
+group_id = "00000000-0000-0000-0000-000000000000"
+definition_asset_id = "mcp-tool-rate-limit"
+implementation_asset_id = "mcp-tool-rate-limit-policy-flex"
+
+[dependencies]
+pdk = { version = "1.8.0", features = ["enable_stop_iteration"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc", "raw_value"] }
+anyhow = "1.0"
+mime = "0.3"
+
+[dev-dependencies]
+pdk-unit = { version = "1.8.0", features = ["enable_stop_iteration"] }
+
+[profile.release]
+lto = true
+opt-level = 'z'
+strip = "debuginfo"

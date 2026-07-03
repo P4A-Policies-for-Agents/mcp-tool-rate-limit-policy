@@ -1,0 +1,68 @@
+# =============================================================================
+# Global ignores for the ms-omni-gateway-policies monorepo
+# (PDK / Omni Gateway custom policies — Rust + WASM)
+#
+# Per-policy .gitignore files may add extra rules on top of these.
+# =============================================================================
+
+# --- OS / editor cruft -------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# --- IDE / tooling -----------------------------------------------------------
+.idea/
+.vscode/
+.cursor/
+*.iml
+.fleet/
+.zed/
+
+# --- Rust / Cargo build artifacts -------------------------------------------
+# `target/` exists at every Rust project root; commit Cargo.lock for the
+# binary/WASM crates (do NOT add Cargo.lock here).
+**/target/
+**/*.rs.bk
+
+# --- Anypoint PDK build / runtime artifacts ---------------------------------
+.pdk/
+**/.pdk/
+# Compiled custom policy binaries dropped into playgrounds at build time
+**/playground/config/custom-policies/*
+!**/playground/config/custom-policies/note.txt
+!**/playground/config/custom-policies/.gitkeep
+
+# --- Anypoint Flex Gateway secrets (NEVER commit) ---------------------------
+# Local Flex Gateway registration produces these — they contain real TLS
+# certs, private keys, agent ids, and tenant ids tied to your org.
+**/registration.yaml
+**/certificate.yaml
+**/conf.d/registration.yaml
+**/conf.d/certificate.yaml
+
+# --- Generic secret / env files ---------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+secrets.yaml
+secrets.yml
+credentials.json
+
+# --- Logs / temp -------------------------------------------------------------
+*.log
+log.claude/progress.json
+
+.claude
+
+# --- Brainstorming / spec drafts (not for public repo) ----------------------
+docs/superpowers/

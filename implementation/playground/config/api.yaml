@@ -1,0 +1,28 @@
+# Copyright 2026 Salesforce, Inc. All rights reserved.
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: ApiInstance
+metadata:
+  name: ingress-mcp
+spec:
+  address: http://0.0.0.0:8081
+  services:
+    upstream:
+      address: http://backend
+      routes:
+        - config:
+            destinationPath: /
+  policies:
+    - policyRef:
+        name: mcp-tool-rate-limit-policy-flex-v1-0 # Overridden during 'make run' execution
+        namespace: default
+      config:
+        # Allow 5 tools/call requests per tool name per minute.
+        maximumRequests: 5
+        timePeriodInMilliseconds: 60000
+        keySelector: "#[vars.toolName]"
+        # Smoke testing tips:
+        # 1. POST a JSON-RPC tools/call body to http://localhost:8081/post
+        #    {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"my_tool","arguments":{}}}
+        # 2. The 6th identical call within 60s returns 429 with a JSON-RPC error envelope.
+        # 3. Vary the tool name to confirm per-tool buckets are independent.
