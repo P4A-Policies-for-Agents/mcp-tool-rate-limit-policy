@@ -68,6 +68,33 @@ Attach the policy to an MCP-fronting API instance and set the three properties:
 
 Each unique `keySelector` result gets its own independent window.
 
+### Configuring in the Anypoint API Manager UI
+
+The same config is filled in through the policy's **Configure** form when you
+apply it to an MCP API instance from API Manager. The key + default tier +
+success-headers toggle + the two optional arrays all map to fields on that form:
+
+![API Manager config form — Key Selector, default Maximum Requests / Time
+Period, Expose Rate-Limit Headers on Success, and a Tool Overrides
+entry](docs/images/config-ui-1-key-default-overrides.png)
+
+![API Manager config form — an Unmetered Tools entry and the
+Save button](docs/images/config-ui-2-unmetered-save.png)
+
+Field ↔ property mapping:
+
+| UI field | Config property |
+|---|---|
+| Key Selector | `keySelector` |
+| Maximum Requests (Default) | `maximumRequests` |
+| Time Period (ms) (Default) | `timePeriodInMilliseconds` |
+| Expose Rate-Limit Headers on Success | `exposeRateLimitHeadersOnSuccess` |
+| Tool Overrides → Tool Name (Regex) / Maximum Requests / Time Period (ms) | `toolOverrides[]` |
+| Unmetered Tools → Tool Name (Regex) | `unmeteredTools[]` |
+
+Use **+ Add** under each section to append override / unmetered entries, then
+**Save**.
+
 ## Step 2b — Add per-tool overrides and unmetered tools (optional)
 
 The `maximumRequests` / `timePeriodInMilliseconds` above are the **default**
